@@ -7940,6 +7940,186 @@ Detail: https://github.com/jrblevin/markdown-mode/issues/817"
                     (buffer-substring (line-beginning-position) (line-end-position)))))
       (should (equal columns '("`..|>`" "Realization"))))))
 
+(ert-deftest test-markdown-table/align-multiline-with-prefix ()
+  "Test table realignment with max width prefix argument."
+  (markdown-test-string "
+| Pipeline ID | Date (UTC) | Gateway key | `create-ip-poc` outcome |
+|--------|-------|-------|-------------------|
+| 3411094132783841280 | 2026-07-31 00:19 | `poc` | 403 `SERVICE_DISABLED` —  Compute Engine API not enabled in `agentgw-poc-260729` (`reason\\: accessNotConfigured`) |
+| 5230972175254552576 | **2026-08-25 08:39** | `poc` | 403 `forbidden` — Required 'compute.addresses.createInternal' permission for 'projects/agentgw-poc-260729/regions/us-central1/addresses/sgpe-ip-poc' |
+| 5093561310868668416 | 2026-08-28 09:24 | `poc-r3-08280905` | SUCCEEDED (IP reserved on 2nd attempt; PSCE + DNS then created; status ACTIVE) |
+"
+    (search-forward "Pipeline")
+    (markdown-table-align 150)
+    (should (string= (buffer-string) "
+| Pipeline ID         | Date (UTC)           | Gateway key       | `create-ip-poc` outcome                                                           |
+|---------------------|----------------------|-------------------|-----------------------------------------------------------------------------------|
+| 3411094132783841280 | 2026-07-31 00:19     | `poc`             | 403 `SERVICE_DISABLED` — Compute Engine API not enabled in `agentgw-poc-260729`   |
+:                     :                      :                   : (`reason\\: accessNotConfigured`)                                                  :
+| 5230972175254552576 | **2026-08-25 08:39** | `poc`             | 403 `forbidden` — Required 'compute.addresses.createInternal' permission for      |
+:                     :                      :                   : 'projects/agentgw-poc-260729/regions/us-central1/addresses/sgpe-ip-poc'           :
+| 5093561310868668416 | 2026-08-28 09:24     | `poc-r3-08280905` | SUCCEEDED (IP reserved on 2nd attempt; PSCE + DNS then created; status ACTIVE)    |
+"))))
+
+(ert-deftest test-markdown-table/align-multiline-infer-width ()
+  "Test table realignment inferring width from existing colon lines."
+  (markdown-test-string "
+| Pipeline ID         | Date (UTC)           | Gateway key       | `create-ip-poc` outcome                                                           |
+|---------------------|----------------------|-------------------|-----------------------------------------------------------------------------------|
+| 3411094132783841280 | 2026-07-31 00:19     | `poc`             | 403 `SERVICE_DISABLED` — Compute Engine API not enabled in `agentgw-poc-260729`   |
+:                     :                      :                   : (`reason\\: accessNotConfigured`)                                                  :
+| 5230972175254552576 | **2026-08-25 08:39** | `poc`             | 403 `forbidden` — Required 'compute.addresses.createInternal' permission for      |
+:                     :                      :                   : 'projects/agentgw-poc-260729/regions/us-central1/addresses/sgpe-ip-poc'           :
+| 5093561310868668416 | 2026-08-28 09:24     | `poc-r3-08280905` | SUCCEEDED (IP reserved on 2nd attempt; PSCE + DNS then created; status ACTIVE)    |
+"
+    (search-forward "reason")
+    (markdown-table-align)
+    (should (string= (buffer-string) "
+| Pipeline ID         | Date (UTC)           | Gateway key       | `create-ip-poc` outcome                                                           |
+|---------------------|----------------------|-------------------|-----------------------------------------------------------------------------------|
+| 3411094132783841280 | 2026-07-31 00:19     | `poc`             | 403 `SERVICE_DISABLED` — Compute Engine API not enabled in `agentgw-poc-260729`   |
+:                     :                      :                   : (`reason\\: accessNotConfigured`)                                                  :
+| 5230972175254552576 | **2026-08-25 08:39** | `poc`             | 403 `forbidden` — Required 'compute.addresses.createInternal' permission for      |
+:                     :                      :                   : 'projects/agentgw-poc-260729/regions/us-central1/addresses/sgpe-ip-poc'           :
+| 5093561310868668416 | 2026-08-28 09:24     | `poc-r3-08280905` | SUCCEEDED (IP reserved on 2nd attempt; PSCE + DNS then created; status ACTIVE)    |
+"))))
+
+(ert-deftest test-markdown-table/align-multiline-unwrap-with-zero ()
+  "Test table realignment unwrapping colon lines with prefix 0."
+  (markdown-test-string "
+| Pipeline ID         | Date (UTC)           | Gateway key       | `create-ip-poc` outcome                                                           |
+|---------------------|----------------------|-------------------|-----------------------------------------------------------------------------------|
+| 3411094132783841280 | 2026-07-31 00:19     | `poc`             | 403 `SERVICE_DISABLED` — Compute Engine API not enabled in `agentgw-poc-260729`   |
+:                     :                      :                   : (`reason\\: accessNotConfigured`)                                                  :
+| 5230972175254552576 | **2026-08-25 08:39** | `poc`             | 403 `forbidden` — Required 'compute.addresses.createInternal' permission for      |
+:                     :                      :                   : 'projects/agentgw-poc-260729/regions/us-central1/addresses/sgpe-ip-poc'           :
+| 5093561310868668416 | 2026-08-28 09:24     | `poc-r3-08280905` | SUCCEEDED (IP reserved on 2nd attempt; PSCE + DNS then created; status ACTIVE)    |
+"
+    (search-forward "reason")
+    (markdown-table-align 0)
+    (should (string= (buffer-string) "
+| Pipeline ID         | Date (UTC)           | Gateway key       | `create-ip-poc` outcome                                                                                                                              |
+|---------------------|----------------------|-------------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 3411094132783841280 | 2026-07-31 00:19     | `poc`             | 403 `SERVICE_DISABLED` — Compute Engine API not enabled in `agentgw-poc-260729` (`reason\\: accessNotConfigured`)                                     |
+| 5230972175254552576 | **2026-08-25 08:39** | `poc`             | 403 `forbidden` — Required 'compute.addresses.createInternal' permission for 'projects/agentgw-poc-260729/regions/us-central1/addresses/sgpe-ip-poc' |
+| 5093561310868668416 | 2026-08-28 09:24     | `poc-r3-08280905` | SUCCEEDED (IP reserved on 2nd attempt; PSCE + DNS then created; status ACTIVE)                                                                       |
+"))))
+
+(ert-deftest test-markdown-table/align-multiline-wrap-inline-code ()
+  "Test table realignment does not split inline code spans across continuation lines."
+  (markdown-test-string "
+| Pipeline ID  | Date (UTC)       | Gateway key | outcome                                                                                            |
+|--------------|------------------|-------------|----------------------------------------------------------------------------------------------------|
+| 341109413278 | 2026-07-31 00:19 | `poc-011`   | 403 `SERVICE_DISABLED` — Engine API not enabled in `tgw-20729` (`reason\\: accessNotConfigured`)    |
+| 523097217525 | 2026-08-25 08:39 | `poc-019`   | 403 `forbidden` — Required 'engine.createInternal' permission for 'engines/tgw-20729/addrs/ip-101' |
+| 509356131086 | 2026-08-28 09:24 | `poc-082`   | SUCCEEDED (IP reserved on 2nd attempt; Engine + DNS then created; status ACTIVE)                   |
+"
+    (font-lock-ensure)
+    (search-forward "Pipeline")
+    (markdown-table-align 96)
+    (should (string= (buffer-string) "
+| Pipeline ID  | Date (UTC)       | Gateway key | outcome                                      |
+|--------------|------------------|-------------|----------------------------------------------|
+| 341109413278 | 2026-07-31 00:19 | `poc-011`   | 403 `SERVICE_DISABLED` — Engine API not      |
+:              :                  :             : enabled in `tgw-20729`                       :
+:              :                  :             : (`reason\\: accessNotConfigured`)             :
+| 523097217525 | 2026-08-25 08:39 | `poc-019`   | 403 `forbidden` — Required                   |
+:              :                  :             : 'engine.createInternal' permission for       :
+:              :                  :             : 'engines/tgw-20729/addrs/ip-101'             :
+| 509356131086 | 2026-08-28 09:24 | `poc-082`   | SUCCEEDED (IP reserved on 2nd attempt;       |
+:              :                  :             : Engine + DNS then created; status ACTIVE)    :
+"))
+    (font-lock-ensure)
+    (markdown-table-align 0)
+    (should (string= (buffer-string) "
+| Pipeline ID  | Date (UTC)       | Gateway key | outcome                                                                                            |
+|--------------|------------------|-------------|----------------------------------------------------------------------------------------------------|
+| 341109413278 | 2026-07-31 00:19 | `poc-011`   | 403 `SERVICE_DISABLED` — Engine API not enabled in `tgw-20729` (`reason\\: accessNotConfigured`)    |
+| 523097217525 | 2026-08-25 08:39 | `poc-019`   | 403 `forbidden` — Required 'engine.createInternal' permission for 'engines/tgw-20729/addrs/ip-101' |
+| 509356131086 | 2026-08-28 09:24 | `poc-082`   | SUCCEEDED (IP reserved on 2nd attempt; Engine + DNS then created; status ACTIVE)                   |
+"))))
+
+(ert-deftest test-markdown-table/align-multiline-unwrap-split-code-span ()
+  "Test unwrapping a multiline table with a split code span across lines."
+  (markdown-test-string "
+| Pipeline ID  | Date (UTC)       | Gateway key | outcome                                      |
+|--------------|------------------|-------------|----------------------------------------------|
+| 341109413278 | 2026-07-31 00:19 | `poc-011`   | 403 `SERVICE_DISABLED` — Engine API not      |
+:              :                  :             : enabled in `tgw-20729` (`reason\\:            :
+:              :                  :             : accessNotConfigured`)                        :
+| 523097217525 | 2026-08-25 08:39 | `poc-019`   | 403 `forbidden` — Required                   |
+:              :                  :             : 'engine.createInternal' permission for       :
+:              :                  :             : 'engines/tgw-20729/addrs/ip-101'             :
+| 509356131086 | 2026-08-28 09:24 | `poc-082`   | SUCCEEDED (IP reserved on 2nd attempt;       |
+:              :                  :             : Engine + DNS then created; status ACTIVE)    :
+"
+    (font-lock-ensure)
+    (search-forward "Pipeline")
+    (markdown-table-align 0)
+    (should (string= (buffer-string) "
+| Pipeline ID  | Date (UTC)       | Gateway key | outcome                                                                                            |
+|--------------|------------------|-------------|----------------------------------------------------------------------------------------------------|
+| 341109413278 | 2026-07-31 00:19 | `poc-011`   | 403 `SERVICE_DISABLED` — Engine API not enabled in `tgw-20729` (`reason\\: accessNotConfigured`)    |
+| 523097217525 | 2026-08-25 08:39 | `poc-019`   | 403 `forbidden` — Required 'engine.createInternal' permission for 'engines/tgw-20729/addrs/ip-101' |
+| 509356131086 | 2026-08-28 09:24 | `poc-082`   | SUCCEEDED (IP reserved on 2nd attempt; Engine + DNS then created; status ACTIVE)                   |
+"))))
+
+(ert-deftest test-markdown-table/align-multiline-min-width-error ()
+  "Test table realignment signals user-error when target width is below header minimum."
+  (markdown-test-string "
+| Pipeline ID | Date (UTC) | Gateway key | outcome |
+|---|---|---|---|
+| 1 | 2 | 3 | 4 |
+"
+    (search-forward "Pipeline")
+    (should-error (markdown-table-align 7) :type 'user-error)))
+
+(ert-deftest test-markdown-table/align-multiline-reflow-embedded-colons ()
+  "Test reflowing continuation lines with embedded colons does not create extra columns."
+  (markdown-test-string "
+| Pipeline ID | Date (UTC) | Gateway key | outcome    |
+|-------------|------------|-------------|------------|
+| 341109413278 | 2026-07-31 | `poc-011`   | 403        |
+:             : 00:19      :             : `SERVICE_DISABLED` :
+:             :            :             : — Engine   :
+:             :            :             : API not    :
+:             :            :             : enabled in :
+:             :            :             : `tgw-20729` :
+:             :            :             : (`reason\\: accessNotConfigured`) :
+| 523097217525 | 2026-08-25 | `poc-019`   | 403        |
+:             : 08:39      :             : `forbidden` :
+:             :            :             : — Required :
+:             :            :             : 'engine.createInternal' :
+:             :            :             : permission :
+:             :            :             : for        :
+:             :            :             : 'engines/tgw-20729/addrs/ip-101' :
+| 509356131086 | 2026-08-28 | `poc-082`   | SUCCEEDED  |
+:             : 09:24      :             : (IP        :
+:             :            :             : reserved   :
+:             :            :             : on 2nd     :
+:             :            :             : attempt;   :
+:             :            :             : Engine +   :
+:             :            :             : DNS then   :
+:             :            :             : created;   :
+:             :            :             : status     :
+:             :            :             : ACTIVE)    :
+"
+    (font-lock-ensure)
+    (search-forward "Pipeline")
+    (markdown-table-align 96)
+    (should (string= (buffer-string) "
+| Pipeline ID  | Date (UTC)       | Gateway key | outcome                                      |
+|--------------|------------------|-------------|----------------------------------------------|
+| 341109413278 | 2026-07-31 00:19 | `poc-011`   | 403 `SERVICE_DISABLED` — Engine API not      |
+:              :                  :             : enabled in `tgw-20729`                       :
+:              :                  :             : (`reason\\: accessNotConfigured`)             :
+| 523097217525 | 2026-08-25 08:39 | `poc-019`   | 403 `forbidden` — Required                   |
+:              :                  :             : 'engine.createInternal' permission for       :
+:              :                  :             : 'engines/tgw-20729/addrs/ip-101'             :
+| 509356131086 | 2026-08-28 09:24 | `poc-082`   | SUCCEEDED (IP reserved on 2nd attempt;       |
+:              :                  :             : Engine + DNS then created; status ACTIVE)    :
+"))))
+
 (ert-deftest test-markdown-table/disable-table-align ()
   "Test disable table alignment."
   (let ((input "| 12345 | 6 |
