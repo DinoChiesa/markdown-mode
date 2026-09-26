@@ -8120,6 +8120,64 @@ Detail: https://github.com/jrblevin/markdown-mode/issues/817"
 :              :                  :             : Engine + DNS then created; status ACTIVE)    :
 "))))
 
+(ert-deftest test-markdown-table/file-fixtures ()
+  "Run table alignment regressions on all markdown files in tests/tables/."
+  (let* ((all-files (file-expand-wildcards (expand-file-name "tables/*.md" markdown-test-dir)))
+         (files (cl-remove-if (lambda (f)
+                                (or (string-prefix-p ".#" (file-name-nondirectory f))
+                                    (string-suffix-p "~" f)
+                                    (not (file-regular-p f))))
+                              all-files)))
+    (should files)
+    (dolist (file files)
+      (with-temp-buffer
+        (markdown-mode)
+        (insert-file-contents file)
+        (let (original-table expected-cases)
+          ;; Extract ORIGINAL table
+          (goto-char (point-min))
+          (should (re-search-forward "^##[ \t]+ORIGINAL" nil t))
+          (should (re-search-forward "^[ \t]*|" nil t))
+          (beginning-of-line)
+          (setq original-table (buffer-substring-no-properties (point) (markdown-table-end)))
+
+          ;; Extract all EXPECTED sections
+          (goto-char (point-min))
+          (while (re-search-forward "^##[ \t]+EXPECTED\\(?:[ \t]+with[ \t]+C-u[ \t]+\\(-?[0-9]*\\)\\)?" nil t)
+            (let ((arg-str (match-string 1)))
+              (let ((prefix-arg (cond ((null arg-str) nil)
+                                      ((string= arg-str "-") -1)
+                                      ((not (string-empty-p arg-str)) (string-to-number arg-str))
+                                      (t nil))))
+                (when (re-search-forward "^[ \t]*|" nil t)
+                  (beginning-of-line)
+                  (push (list prefix-arg
+                              (buffer-substring-no-properties (point) (markdown-table-end)))
+                        expected-cases)))))
+          (should expected-cases)
+
+          ;; Test each EXPECTED case against the ORIGINAL table
+          (dolist (case (nreverse expected-cases))
+            (let ((prefix-arg (nth 0 case))
+                  (expected-table (nth 1 case)))
+              (with-temp-buffer
+                (markdown-mode)
+                (insert original-table)
+                (goto-char (point-min))
+                (markdown-table-align prefix-arg)
+                (let* ((actual-table (buffer-substring-no-properties (point-min) (markdown-table-end)))
+                       (lines (split-string actual-table "\n" t)))
+                  ;; When not unaligned (non-negative prefix-arg), check table alignment invariants
+                  (when (or (null prefix-arg) (>= prefix-arg 0))
+                    (let ((widths (mapcar #'string-width lines)))
+                      ;; 1. Every line must have the exact same width
+                      (should (cl-every (lambda (w) (= w (car widths))) (cdr widths)))
+                      ;; 2. If a positive target width was given, table must not exceed it
+                      (when (and (numberp prefix-arg) (> prefix-arg 0))
+                        (should (<= (car widths) prefix-arg)))))
+                  ;; 3. Check exact match with EXPECTED
+                  (should (string= actual-table expected-table)))))))))))
+
 (ert-deftest test-markdown-table/disable-table-align ()
   "Test disable table alignment."
   (let ((input "| 12345 | 6 |

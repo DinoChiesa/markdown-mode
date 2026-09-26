@@ -7,7 +7,7 @@ COMPILED=markdown-mode.elc
 
 VERSION=$(shell cat $(SOURCE) | sed -n 's/^;; Version: \(.*\)/\1/p')
 
-TEST_FILES=tests/Makefile tests/*.el tests/*.text tests/*.md
+TEST_FILES=tests/Makefile tests/*.el tests/*.text tests/*.md tests/tables/*.md
 
 .el.elc:
 	$(EMACS) -q -no-site-file -no-init-file -batch -f batch-byte-compile $<

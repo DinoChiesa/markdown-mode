@@ -9846,8 +9846,7 @@ This function assumes point is on a table."
                     ((markdown--table-inside-inline-code-p pos)
                      (goto-char (match-end 1)))
                     ((and (eql delim ?:)
-                          (not (memq (char-before pos) '(?\s ?\t nil)))
-                          (not (memq (char-after (match-end 1)) '(?\s ?\t nil ?\n ?\r))))
+                          (not (memq (char-before pos) '(?\s ?\t nil))))
                      (goto-char (match-end 1)))
                     (t
                      (push (buffer-substring-no-properties cur (match-beginning 0)) ret)
@@ -9860,6 +9859,34 @@ This function assumes point is on a table."
   (and (string-match-p "\\`[ \t]*|[ \t]*[-:]" line)
        (cl-loop for c across line
                 always (member c '(?| ?- ?: ?\t ? )))))
+(defconst markdown--regex-code-span
+  "\\(?:\\`\\|[^\\]\\)\\(?1:\\(?2:`+\\)\\(?3:[^`\n]+?\\)\\(?4:\\2\\)\\)"
+  "Regular expression for matching inline code fragments.
+Matches fragments without crossing into subsequent code spans.")
+
+(defun markdown--table-cell-min-width (text)
+  "Calculate minimum required width for TEXT without splitting unbreakable spans."
+  (if (string-empty-p (string-trim text))
+      1
+    (with-temp-buffer
+      (insert text)
+      (let (spans)
+        (goto-char (point-min))
+        (while (re-search-forward markdown--regex-code-span nil t)
+          (push (cons (match-beginning 1) (match-end 1)) spans))
+        (dolist (span spans)
+          (save-excursion
+            (goto-char (car span))
+            (while (search-forward " " (cdr span) t)
+              (replace-match "\u00a0")))))
+      (goto-char (point-min))
+      (let ((max-w 1))
+        (while (not (eobp))
+          (skip-chars-forward " \t\r\n")
+          (let ((start (point)))
+            (skip-chars-forward "^ \t\r\n")
+            (setq max-w (max max-w (string-width (buffer-substring-no-properties start (point)))))))
+        max-w))))
 
 (defun markdown--table-wrap-text (text width)
   "Wrap TEXT to fit within WIDTH columns."
@@ -9869,15 +9896,32 @@ This function assumes point is on a table."
       (insert text)
       (let (spans)
         (goto-char (point-min))
-        (while (re-search-forward markdown-regex-code nil t)
+        (while (re-search-forward markdown--regex-code-span nil t)
           (push (cons (match-beginning 1) (match-end 1)) spans))
         (dolist (span spans)
           (save-excursion
             (goto-char (car span))
             (while (search-forward " " (cdr span) t)
               (replace-match "\u00a0")))))
-      (let ((fill-column width))
-        (fill-region (point-min) (point-max)))
+      (let ((fill-column width)
+            (sentence-end-double-space nil))
+        (fill-region (point-min) (point-max))
+        (goto-char (point-min))
+        (while (not (eobp))
+          (let ((line-len (- (line-end-position) (line-beginning-position))))
+            (if (<= line-len width)
+                (forward-line 1)
+              (let ((break-pos (save-excursion
+                                 (end-of-line)
+                                 (skip-chars-backward "^ \t\n")
+                                 (skip-chars-backward " \t")
+                                 (point))))
+                (if (<= break-pos (line-beginning-position))
+                    (forward-line 1)
+                  (goto-char break-pos)
+                  (delete-horizontal-space)
+                  (insert "\n")
+                  (fill-region (point) (point-max))))))))
       (goto-char (point-min))
       (while (search-forward "\u00a0" nil t)
         (replace-match " "))
@@ -9919,74 +9963,153 @@ indentation and number of columns."
        (format (format " %%%ds " width) cell))
      cells delim)))
 
-(defun markdown-table-align (&optional arg)
-  "Align table at point.
-With positive numeric prefix ARG (e.g. \\[universal-argument] 150), wrap
-wide columns so table width does not exceed ARG, using colon continuation
-lines.  With prefix ARG 0 (or negative), remove colon continuation lines
-and unfold rows back to standard single-line format.
-With no prefix ARG, if table already uses colon continuation lines,
-preserve the existing width; otherwise align as a single-line table.
-This function assumes point is on a table."
-  (interactive "P")
+(defun markdown-table-unalign ()
+  "Unalign table at point to minimal standard spacing.
+Unfolds multiline colon continuation lines into single-line rows and
+formats cells with a single space padding between delimiters (e.g.
+| col | col |)."
+  (interactive)
   (let ((begin (markdown-table-begin))
         (end (copy-marker (markdown-table-end))))
     (markdown-table-save-cell
      (goto-char begin)
      (let* (fmtspec
-            ;; Store table indent
             (indent (progn (looking-at "[ \t]*") (match-string 0)))
-            ;; Split table in lines and save column format specifier
             (raw-lines (markdown--split-string (buffer-substring-no-properties begin end) "\n"))
-            (has-colon-lines (cl-some (lambda (l) (string-match-p markdown-table-continuation-line-regexp l))
-                                      raw-lines))
-            (target-width (cond
-                           ((numberp arg)
-                            (if (<= arg 0) nil arg))
-                           (arg
-                            (let ((v (prefix-numeric-value arg)))
-                              (if (<= v 0) nil v)))
-                           (has-colon-lines
-                            (apply #'max (mapcar #'markdown--string-width raw-lines)))
-                           (t markdown-table-max-width))))
-       (if (and (null target-width) (not has-colon-lines))
-           (let* ((lines (mapcar (lambda (line)
-                                   (if (markdown--is-delimiter-row line)
-                                       (progn (setq fmtspec (or fmtspec line)) nil)
-                                     line))
-                                 raw-lines))
-                  (cells (mapcar (lambda (l) (markdown--table-line-to-columns l))
-                                 (remq nil lines)))
-                  (maxcells (if cells
-                                (apply #'max (mapcar #'length cells))
-                              (user-error "Empty table")))
-                  maxwidths)
-             (dotimes (i maxcells)
-               (let ((column (mapcar (lambda (x) (or (nth i x) "")) cells)))
-                 (push (apply #'max 1 (mapcar #'markdown--string-width column))
-                       maxwidths)))
-             (setq maxwidths (nreverse maxwidths))
-             (setq fmtspec (markdown-table-colfmt fmtspec))
-             (let ((hfmt (concat indent "|"))
-                   hfmt1 fmt (fmts fmtspec))
-               (dolist (width maxwidths)
-                 (setq fmt (car fmts) fmts (cdr fmts))
-                 (cond ((equal fmt 'l) (setq hfmt1 ":%s-|"))
-                       ((equal fmt 'r) (setq hfmt1 "-%s:|"))
-                       ((equal fmt 'c) (setq hfmt1 ":%s:|"))
-                       (t              (setq hfmt1 "-%s-|")))
-                 (setq hfmt (concat hfmt (format hfmt1 (make-string width ?-)))))
-               (dolist (line lines)
-                 (let ((line (if line
-                                 (concat indent "|"
-                                         (markdown-table-align-raw (pop cells) fmtspec maxwidths)
-                                         "|")
-                               hfmt))
-                       (previous (buffer-substring (point) (line-end-position))))
-                   (if (equal previous line)
-                       (forward-line)
-                     (insert line "\n")
-                     (delete-region (point) (line-beginning-position 2)))))))
+            header-cells
+            logical-rows
+            current-row)
+       (dolist (line (remove "" raw-lines))
+         (cond
+          ((markdown--is-delimiter-row line)
+           (setq fmtspec (markdown-table-colfmt line)))
+          ((string-match-p markdown-table-continuation-line-regexp line)
+           (let ((cont-cells (markdown--table-line-to-columns line)))
+             (setq current-row
+                   (let ((len (max (length current-row) (length cont-cells))))
+                     (cl-loop for i from 0 below len
+                              for c1 = (string-trim (or (nth i current-row) ""))
+                              for c2 = (string-trim (or (nth i cont-cells) ""))
+                              collect (cond ((string-empty-p c1) c2)
+                                            ((string-empty-p c2) c1)
+                                            (t (concat c1 " " c2))))))))
+          (t
+           (if (null header-cells)
+               (setq header-cells (markdown--table-line-to-columns line))
+             (when current-row
+               (push current-row logical-rows))
+             (setq current-row (markdown--table-line-to-columns line))))))
+       (when current-row
+         (push current-row logical-rows))
+       (setq logical-rows (nreverse logical-rows))
+       (let* ((all-rows (cons header-cells logical-rows))
+              (num-cols (if all-rows
+                            (apply #'max (mapcar #'length all-rows))
+                          (user-error "Empty table"))))
+         (while (and (> num-cols (if header-cells (length header-cells) 1))
+                     (cl-every (lambda (r)
+                                 (string-empty-p (string-trim (or (nth (1- num-cols) r) ""))))
+                               all-rows))
+           (setq num-cols (1- num-cols))
+           (setq header-cells (cl-subseq header-cells 0 (min (length header-cells) num-cols)))
+           (setq logical-rows (mapcar (lambda (r) (cl-subseq r 0 (min (length r) num-cols)))
+                                      logical-rows)))
+         (let* ((fmts (or fmtspec (make-list num-cols 'd)))
+                (delim-cells (cl-loop for i from 0 below num-cols
+                                      for fmt = (or (nth i fmts) 'd)
+                                      collect (cond ((eq fmt 'l) ":---")
+                                                    ((eq fmt 'r) "---:")
+                                                    ((eq fmt 'c) ":---:")
+                                                    (t           "---"))))
+                (delim-line (concat indent "| " (string-join delim-cells " | ") " |"))
+                (format-row (lambda (cells)
+                              (let ((padded-cells (cl-loop for i from 0 below num-cols
+                                                           collect (string-trim (or (nth i cells) "")))))
+                                (concat indent "| " (string-join padded-cells " | ") " |"))))
+                (out-lines (cons (funcall format-row header-cells)
+                                 (cons delim-line
+                                       (mapcar format-row logical-rows))))
+                (has-trailing-newline (or (not (eobp)) (eql (char-before end) ?\n))))
+           (goto-char begin)
+           (delete-region begin end)
+           (insert (string-join out-lines "\n"))
+           (when has-trailing-newline
+             (insert "\n"))))))
+    (set-marker end nil)))
+
+(defun markdown-table-align (&optional arg)
+  "Align table at point.
+With positive numeric prefix ARG (e.g. \\[universal-argument] 150), wrap
+wide columns so table width does not exceed ARG, using colon continuation
+lines.  With prefix ARG 0, remove colon continuation lines and unfold
+rows back to standard single-line aligned format.
+With negative prefix ARG (e.g. \\[universal-argument] -), unalign the table:
+unfold continuation lines and format with minimal single-space padding.
+With no prefix ARG, if table already uses colon continuation lines,
+preserve the existing width; otherwise align as a single-line table.
+This function assumes point is on a table."
+  (interactive "P")
+  (let* ((num-arg (when arg (prefix-numeric-value arg))))
+    (if (and num-arg (< num-arg 0))
+        (markdown-table-unalign)
+      (let ((begin (markdown-table-begin))
+            (end (copy-marker (markdown-table-end))))
+        (markdown-table-save-cell
+         (goto-char begin)
+         (let* (fmtspec
+                ;; Store table indent
+                (indent (progn (looking-at "[ \t]*") (match-string 0)))
+                ;; Split table in lines and save column format specifier
+                (raw-lines (markdown--split-string (buffer-substring-no-properties begin end) "\n"))
+                (has-colon-lines (cl-some (lambda (l) (string-match-p markdown-table-continuation-line-regexp l))
+                                          raw-lines))
+                (target-width (cond
+                               ((numberp arg)
+                                (if (<= arg 0) nil arg))
+                               (arg
+                                (let ((v (prefix-numeric-value arg)))
+                                  (if (<= v 0) nil v)))
+                               (has-colon-lines
+                                (apply #'max (mapcar #'markdown--string-width raw-lines)))
+                               (t markdown-table-max-width))))
+           (if (and (null target-width) (not has-colon-lines))
+               (let* ((lines (mapcar (lambda (line)
+                                       (if (markdown--is-delimiter-row line)
+                                           (progn (setq fmtspec (or fmtspec line)) nil)
+                                         line))
+                                     raw-lines))
+                      (cells (mapcar (lambda (l) (markdown--table-line-to-columns l))
+                                     (remq nil lines)))
+                      (maxcells (if cells
+                                    (apply #'max (mapcar #'length cells))
+                                  (user-error "Empty table")))
+                      maxwidths)
+                 (dotimes (i maxcells)
+                   (let ((column (mapcar (lambda (x) (or (nth i x) "")) cells)))
+                     (push (apply #'max 1 (mapcar #'markdown--string-width column))
+                           maxwidths)))
+                 (setq maxwidths (nreverse maxwidths))
+                 (setq fmtspec (markdown-table-colfmt fmtspec))
+                 (let ((hfmt (concat indent "|"))
+                       hfmt1 fmt (fmts fmtspec))
+                   (dolist (width maxwidths)
+                     (setq fmt (car fmts) fmts (cdr fmts))
+                     (cond ((equal fmt 'l) (setq hfmt1 ":%s-|"))
+                           ((equal fmt 'r) (setq hfmt1 "-%s:|"))
+                           ((equal fmt 'c) (setq hfmt1 ":%s:|"))
+                           (t              (setq hfmt1 "-%s-|")))
+                     (setq hfmt (concat hfmt (format hfmt1 (make-string width ?-)))))
+                   (dolist (line lines)
+                     (let ((line (if line
+                                     (concat indent "|"
+                                             (markdown-table-align-raw (pop cells) fmtspec maxwidths)
+                                             "|")
+                                   hfmt))
+                           (previous (buffer-substring (point) (line-end-position))))
+                       (if (equal previous line)
+                           (forward-line)
+                         (insert line "\n")
+                         (delete-region (point) (line-beginning-position 2)))))))
          (let (header-cells
                logical-rows
                current-row)
@@ -10021,7 +10144,10 @@ This function assumes point is on a table."
              (dotimes (i num-cols)
                (let ((col-cells (mapcar (lambda (r) (or (nth i r) "")) all-rows)))
                  (push (apply #'max 1 (mapcar #'markdown--string-width col-cells)) natural-widths)
-                 (push (max 1 (markdown--string-width (or (nth i header-cells) ""))) min-widths)))
+                 (push (max 1
+                            (markdown--string-width (or (nth i header-cells) ""))
+                            (apply #'max 1 (mapcar #'markdown--table-cell-min-width col-cells)))
+                       min-widths)))
              (setq natural-widths (nreverse natural-widths)
                    min-widths (nreverse min-widths))
              (let ((min-table-width (+ (length indent) 1 (* 3 num-cols) (apply #'+ min-widths))))
@@ -10031,33 +10157,41 @@ This function assumes point is on a table."
              (let* ((widths (if (and target-width (> target-width 0))
                                 (markdown--table-allocate-widths natural-widths min-widths target-width
                                                                  (length indent) num-cols)
-                              natural-widths))
-                    (hfmt (concat indent "|"))
-                    hfmt1 fmt (fmts fmtspec))
-               (dolist (w widths)
-                 (setq fmt (car fmts) fmts (cdr fmts))
-                 (cond ((equal fmt 'l) (setq hfmt1 ":%s-|"))
-                       ((equal fmt 'r) (setq hfmt1 "-%s:|"))
-                       ((equal fmt 'c) (setq hfmt1 ":%s:|"))
-                       (t              (setq hfmt1 "-%s-|")))
-                 (setq hfmt (concat hfmt (format hfmt1 (make-string w ?-)))))
-               (let ((out-lines (list hfmt
-                                      (concat indent "|" (markdown-table-align-raw header-cells fmtspec widths "|") "|")))
-                     (has-trailing-newline (or (not (eobp)) (eql (char-before end) ?\n))))
-                 (dolist (row logical-rows)
-                   (let* ((wrapped-cols (cl-mapcar (lambda (c w) (markdown--table-wrap-text c w)) row widths))
-                          (nlines (apply #'max 1 (mapcar #'length wrapped-cols))))
-                     (dotimes (k nlines)
-                       (let ((kcells (mapcar (lambda (col) (or (nth k col) "")) wrapped-cols))
-                             (delim (if (= k 0) "|" ":")))
-                         (push (concat indent delim (markdown-table-align-raw kcells fmtspec widths delim) delim)
-                               out-lines)))))
-                 (goto-char begin)
-                 (delete-region begin end)
-                 (insert (string-join (nreverse out-lines) "\n"))
-                 (when has-trailing-newline
-                   (insert "\n")))))))))
-      (set-marker end nil)))
+                              natural-widths)))
+               (while (and (> num-cols (if header-cells (length header-cells) 1))
+                           (cl-every (lambda (r)
+                                       (string-empty-p (string-trim (or (nth (1- num-cols) r) ""))))
+                                     all-rows))
+                 (setq num-cols (1- num-cols))
+                 (setq widths (butlast widths))
+                 (setq logical-rows (mapcar (lambda (r) (cl-subseq r 0 (min (length r) num-cols)))
+                                            logical-rows)))
+               (let ((hfmt (concat indent "|"))
+                     hfmt1 fmt (fmts fmtspec))
+                 (dolist (w widths)
+                   (setq fmt (car fmts) fmts (cdr fmts))
+                   (cond ((equal fmt 'l) (setq hfmt1 ":%s-|"))
+                         ((equal fmt 'r) (setq hfmt1 "-%s:|"))
+                         ((equal fmt 'c) (setq hfmt1 ":%s:|"))
+                         (t              (setq hfmt1 "-%s-|")))
+                   (setq hfmt (concat hfmt (format hfmt1 (make-string w ?-)))))
+                 (let ((out-lines (list hfmt
+                                        (concat indent "|" (markdown-table-align-raw header-cells fmtspec widths "|") "|")))
+                       (has-trailing-newline (or (not (eobp)) (eql (char-before end) ?\n))))
+                   (dolist (row logical-rows)
+                     (let* ((wrapped-cols (cl-mapcar (lambda (c w) (markdown--table-wrap-text c w)) row widths))
+                            (nlines (apply #'max 1 (mapcar #'length wrapped-cols))))
+                       (dotimes (k nlines)
+                         (let ((kcells (mapcar (lambda (col) (or (nth k col) "")) wrapped-cols))
+                               (delim (if (= k 0) "|" ":")))
+                           (push (concat indent delim (markdown-table-align-raw kcells fmtspec widths delim) delim)
+                                 out-lines)))))
+                   (goto-char begin)
+                   (delete-region begin end)
+                   (insert (string-join (nreverse out-lines) "\n"))
+                   (when has-trailing-newline
+                     (insert "\n"))))))))))
+        (set-marker end nil)))))
 
 (defun markdown-table-insert-row (&optional arg)
   "Insert a new row above the row at point into the table.
