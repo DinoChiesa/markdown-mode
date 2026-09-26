@@ -8065,14 +8065,26 @@ Detail: https://github.com/jrblevin/markdown-mode/issues/817"
 "))))
 
 (ert-deftest test-markdown-table/align-multiline-min-width-error ()
-  "Test table realignment signals user-error when target width is below header minimum."
+  "Test table realignment signals user-error and creates/dismisses error overlays."
   (markdown-test-string "
 | Pipeline ID | Date (UTC) | Gateway key | outcome |
 |---|---|---|---|
 | 1 | 2 | 3 | 4 |
 "
     (search-forward "Pipeline")
-    (should-error (markdown-table-align 7) :type 'user-error)))
+    (should-error (markdown-table-align 7) :type 'user-error)
+    (should (= (length markdown-table-error-overlays) 4))
+    (dolist (ov markdown-table-error-overlays)
+      (should (eq (overlay-get ov 'face) 'flymake-warning)))
+    (let ((highlighted (mapcar (lambda (ov)
+                                 (buffer-substring-no-properties (overlay-start ov) (overlay-end ov)))
+                               markdown-table-error-overlays)))
+      (should (member "Pipeline ID" highlighted))
+      (should (member "Date (UTC)" highlighted))
+      (should (member "Gateway key" highlighted))
+      (should (member "outcome" highlighted)))
+    (markdown-table-align 60)
+    (should (null markdown-table-error-overlays))))
 
 (ert-deftest test-markdown-table/align-multiline-reflow-embedded-colons ()
   "Test reflowing continuation lines with embedded colons does not create extra columns."

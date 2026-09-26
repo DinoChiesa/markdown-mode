@@ -9864,10 +9864,11 @@ This function assumes point is on a table."
   "Regular expression for matching inline code fragments.
 Matches fragments without crossing into subsequent code spans.")
 
-(defun markdown--table-cell-min-width (text)
-  "Calculate minimum required width for TEXT without splitting unbreakable spans."
+(defun markdown--table-cell-min-width (text &optional return-token)
+  "Calculate minimum required width for TEXT without splitting unbreakable spans.
+When RETURN-TOKEN is non-nil, return a cons cell (WIDTH . TOKEN)."
   (if (string-empty-p (string-trim text))
-      1
+      (if return-token (cons 1 "") 1)
     (with-temp-buffer
       (insert text)
       (let (spans)
@@ -9880,13 +9881,20 @@ Matches fragments without crossing into subsequent code spans.")
             (while (search-forward " " (cdr span) t)
               (replace-match "\u00a0")))))
       (goto-char (point-min))
-      (let ((max-w 1))
+      (let ((max-w 1)
+            (max-tok ""))
         (while (not (eobp))
           (skip-chars-forward " \t\r\n")
           (let ((start (point)))
             (skip-chars-forward "^ \t\r\n")
-            (setq max-w (max max-w (string-width (buffer-substring-no-properties start (point)))))))
-        max-w))))
+            (let* ((tok (buffer-substring-no-properties start (point)))
+                   (w (string-width tok)))
+              (when (> w max-w)
+                (setq max-w w
+                      max-tok (replace-regexp-in-string "\u00a0" " " tok t t))))))
+        (if return-token
+            (cons max-w max-tok)
+          max-w)))))
 
 (defun markdown--table-wrap-text (text width)
   "Wrap TEXT to fit within WIDTH columns."
@@ -9963,12 +9971,18 @@ indentation and number of columns."
        (format (format " %%%ds " width) cell))
      cells delim)))
 
+(defvar-local markdown-table-error-overlays nil
+  "List of overlays used to highlight table cells causing alignment errors.")
+
 (defun markdown-table-unalign ()
   "Unalign table at point to minimal standard spacing.
 Unfolds multiline colon continuation lines into single-line rows and
 formats cells with a single space padding between delimiters (e.g.
 | col | col |)."
   (interactive)
+  (when markdown-table-error-overlays
+    (mapc #'delete-overlay markdown-table-error-overlays)
+    (setq markdown-table-error-overlays nil))
   (let ((begin (markdown-table-begin))
         (end (copy-marker (markdown-table-end))))
     (markdown-table-save-cell
@@ -10049,6 +10063,9 @@ With no prefix ARG, if table already uses colon continuation lines,
 preserve the existing width; otherwise align as a single-line table.
 This function assumes point is on a table."
   (interactive "P")
+  (when markdown-table-error-overlays
+    (mapc #'delete-overlay markdown-table-error-overlays)
+    (setq markdown-table-error-overlays nil))
   (let* ((num-arg (when arg (prefix-numeric-value arg))))
     (if (and num-arg (< num-arg 0))
         (markdown-table-unalign)
@@ -10140,20 +10157,64 @@ This function assumes point is on a table."
                   (num-cols (if all-rows
                                 (apply #'max (mapcar #'length all-rows))
                               (user-error "Empty table")))
-                  natural-widths min-widths)
+                  natural-widths min-widths col-constraints max-constraint)
              (dotimes (i num-cols)
-               (let ((col-cells (mapcar (lambda (r) (or (nth i r) "")) all-rows)))
+               (let* ((col-cells (mapcar (lambda (r) (or (nth i r) "")) all-rows))
+                      (h-text (or (nth i header-cells) ""))
+                      (h-width (max 1 (markdown--string-width h-text)))
+                      (col-min h-width)
+                      (col-token-info (cons h-width h-text))
+                      (col-row-idx 0))
                  (push (apply #'max 1 (mapcar #'markdown--string-width col-cells)) natural-widths)
-                 (push (max 1
-                            (markdown--string-width (or (nth i header-cells) ""))
-                            (apply #'max 1 (mapcar #'markdown--table-cell-min-width col-cells)))
-                       min-widths)))
+                 (let ((row-idx 1))
+                   (dolist (cell (cdr col-cells))
+                     (let* ((tok-info (markdown--table-cell-min-width cell t))
+                            (w (car tok-info)))
+                       (when (> w col-min)
+                         (setq col-min w
+                               col-token-info tok-info
+                               col-row-idx row-idx)))
+                     (setq row-idx (1+ row-idx))))
+                 (push col-min min-widths)
+                 (let ((constraint (list i col-row-idx col-token-info col-min)))
+                   (push constraint col-constraints)
+                   (when (or (null max-constraint) (> col-min (nth 3 max-constraint)))
+                     (setq max-constraint constraint)))))
              (setq natural-widths (nreverse natural-widths)
-                   min-widths (nreverse min-widths))
+                   min-widths (nreverse min-widths)
+                   col-constraints (nreverse col-constraints))
              (let ((min-table-width (+ (length indent) 1 (* 3 num-cols) (apply #'+ min-widths))))
                (when (and target-width (< target-width min-table-width))
-                 (user-error "Target table width %d is less than minimum width %d based on headers"
-                             target-width min-table-width)))
+                 (let* ((col-idx (nth 0 max-constraint))
+                        (row-idx (nth 1 max-constraint))
+                        (tok-info (nth 2 max-constraint))
+                        (col-name (let ((h (or (nth col-idx header-cells) "")))
+                                    (if (string-empty-p (string-trim h))
+                                        (format "column %d" (1+ col-idx))
+                                      (format "column \"%s\"" (string-trim h)))))
+                        (tok-str (cdr tok-info))
+                        (tok-snippet (if (> (length tok-str) 30)
+                                         (concat (substring tok-str 0 27) "...")
+                                       tok-str)))
+                   (save-excursion
+                     (dolist (constraint col-constraints)
+                       (let ((str (cdr (nth 2 constraint))))
+                         (goto-char begin)
+                         (when (and (not (string-empty-p (string-trim str)))
+                                    (search-forward str end t))
+                           (let ((ov (make-overlay (match-beginning 0) (match-end 0))))
+                             (overlay-put ov 'face 'flymake-warning)
+                             (push ov markdown-table-error-overlays))))))
+                   (if (= row-idx 0)
+                       (user-error "Target table width %d is less than minimum width %d (header in %s requires width %d)"
+                                   target-width min-table-width col-name (car tok-info))
+                     (let* ((row (nth (1- row-idx) logical-rows))
+                            (row-id (string-trim (or (nth 0 row) "")))
+                            (row-desc (if (string-empty-p row-id)
+                                          (format "row %d" row-idx)
+                                        (format "row %d (\"%s\")" row-idx row-id))))
+                       (user-error "Target table width %d is less than minimum width %d (%s, %s requires width %d for: %s)"
+                                   target-width min-table-width row-desc col-name (car tok-info) tok-snippet))))))
              (let* ((widths (if (and target-width (> target-width 0))
                                 (markdown--table-allocate-widths natural-widths min-widths target-width
                                                                  (length indent) num-cols)
